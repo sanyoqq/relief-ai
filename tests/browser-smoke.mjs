@@ -29,6 +29,13 @@ try {
  return {triangles:n,min,max,xyBounds:[xmin,xmax,ymin,ymax],heightGrid:bins.map(z=>Number(z.toFixed(5))),gridSize:size};
  }
  const gray=await stl('gray');
+ // The radial grayscale fixture must produce a raised center, not merely a nonzero global range.
+ const g=gray.heightGrid, s=gray.gridSize;
+ const center=[3,4].flatMap(y=>[3,4].map(x=>g[y*s+x]));
+ const corners=[g[0],g[s-1],g[(s-1)*s],g[s*s-1]];
+ const mean=a=>a.reduce((sum,v)=>sum+v,0)/a.length;
+ assert.ok(mean(center)-mean(corners)>0.1,'radial fixture lost its central relief');
+
  const pngPending=page.waitForEvent('download');await page.locator('#map').click();const png=await pngPending;await png.saveAs('test-results/depth.png');const p=await readFile('test-results/depth.png');assert.equal(p[24],16,'expected 16-bit PNG');
  await page.locator('#modelChoice').selectOption('small');await page.locator('#autoFace').uncheck();
  await page.locator('#ai').click();await page.waitForFunction(()=>/AI-барельеф готов|Ошибка AI/.test(document.querySelector('#status').textContent),{},{timeout:600000});
