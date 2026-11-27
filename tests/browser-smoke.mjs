@@ -16,7 +16,17 @@ try {
  const pending=page.waitForEvent('download');await page.locator('#save').click();const dl=await pending;await dl.saveAs('test-results/'+label+'.stl');
  const b=await readFile('test-results/'+label+'.stl');const n=b.readUInt32LE(80);assert.equal(b.length,84+50*n);assert.ok(n>100);
  let min=Infinity,max=-Infinity;for(let i=0;i<n;i++)for(let j=0;j<3;j++){const z=b.readFloatLE(84+i*50+12+j*12+8);assert.ok(Number.isFinite(z));min=Math.min(min,z);max=Math.max(max,z);}
- assert.ok(max-min>3.1,'relief has no height');return {triangles:n,min,max};
+ assert.ok(max-min>3.1,'relief has no height');
+ // Spatial diagnostic: maximum surface vertex height per normalized XY bin.
+ // This is a coarse vertex envelope, not a rasterized or registered portrait metric.
+ let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+ function vertices(fn){for(let i=0;i<n;i++)for(let j=0;j<3;j++){const o=84+i*50+12+j*12;fn(b.readFloatLE(o),b.readFloatLE(o+4),b.readFloatLE(o+8));}}
+ vertices((x,y)=>{assert.ok(Number.isFinite(x)&&Number.isFinite(y));xmin=Math.min(xmin,x);xmax=Math.max(xmax,x);ymin=Math.min(ymin,y);ymax=Math.max(ymax,y);});
+ assert.ok(xmax>xmin&&ymax>ymin,'degenerate XY extent');
+ const size=8, bins=Array(size*size).fill(null);
+ vertices((x,y,z)=>{const ix=Math.min(size-1,Math.floor(size*(x-xmin)/(xmax-xmin)));const iy=Math.min(size-1,Math.floor(size*(y-ymin)/(ymax-ymin)));const k=iy*size+ix;bins[k]=bins[k]===null?z:Math.max(bins[k],z);});
+ assert.ok(bins.every(v=>v!==null),'surface grid has empty bins');
+ return {triangles:n,min,max,xyBounds:[xmin,xmax,ymin,ymax],heightGrid:bins.map(z=>Number(z.toFixed(5))),gridSize:size};
  }
  const gray=await stl('gray');
  const pngPending=page.waitForEvent('download');await page.locator('#map').click();const png=await pngPending;await png.saveAs('test-results/depth.png');const p=await readFile('test-results/depth.png');assert.equal(p[24],16,'expected 16-bit PNG');
