@@ -40,5 +40,36 @@ try {
  await page.locator('#modelChoice').selectOption('small');await page.locator('#autoFace').uncheck();
  await page.locator('#ai').click();await page.waitForFunction(()=>/AI-барельеф готов|Ошибка AI/.test(document.querySelector('#status').textContent),{},{timeout:600000});
  const status=await page.locator('#status').innerText();assert.match(status,/AI-барельеф готов/);
- const ai=await stl('ai');assert.equal(errors.length,0,errors.join('\n'));console.log(JSON.stringify({gray,ai,status},null,2));
+ const ai=await stl('ai');
+ // Measure browser frame cadence during actual pointer-driven orbit.
+ // SwiftShader CI is a diagnostic baseline, not a hardware FPS guarantee.
+ const canvas=page.locator('#view canvas');
+ await canvas.scrollIntoViewIfNeeded();
+ const rect=await canvas.boundingBox();
+ assert.ok(rect && rect.width>100 && rect.height>100,'3D viewport unavailable');
+ const x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+ await page.mouse.move(x,y);
+ await page.mouse.down();
+ const sample=page.evaluate(()=>new Promise(resolve=>{
+   const times=[];let previous;
+   const start=performance.now();
+   function frame(t){
+     if(previous!==undefined)times.push(t-previous);
+     previous=t;
+     if(performance.now()-start>=2000)resolve(times);
+     else requestAnimationFrame(frame);
+   }
+   requestAnimationFrame(frame);
+ }));
+ try {
+   for(let i=1;i<=30;i++){
+     await page.mouse.move(x+Math.sin(i/30*Math.PI*2)*Math.min(100,rect.width/4),y+Math.sin(i/30*Math.PI)*Math.min(40,rect.height/4));
+     await page.waitForTimeout(35);
+   }
+ }finally{await page.mouse.up();}
+ const frames=await sample;
+ assert.ok(frames.length>0 && frames.every(t=>Number.isFinite(t)&&t>0),'no valid animation frames');
+ const sorted=[...frames].sort((a,b)=>a-b);
+ const rotation={frames:frames.length,fps:1000*frames.length/frames.reduce((a,b)=>a+b,0),p95Ms:sorted[Math.ceil(sorted.length*.95)-1],maxMs:sorted.at(-1)};
+ assert.equal(errors.length,0,errors.join('\n'));console.log(JSON.stringify({gray,ai,status,rotation},null,2));
 }finally{await page.screenshot({path:'test-results/screenshot.png',fullPage:true}).catch(()=>{});await browser.close();}
