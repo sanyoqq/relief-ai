@@ -1,0 +1,63 @@
+name: Relief browser CI
+on:
+  pull_request:
+  push:
+    branches: ['autodev/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-save --no-package-lock playwright@1.51.1
+      - run: npx playwright install --with-deps chromium
+      - name: Check JavaScript syntax
+        run: |
+          python3 -c "import re,pathlib; s=pathlib.Path('index.html').read_text(); pathlib.Path('/tmp/relief.mjs').write_text(re.search(r'<script type=\"module\">(.*?)</script>',s,re.S).group(1))"
+          node --check /tmp/relief.mjs
+          node --check tests/browser-smoke.mjs
+      - name: Run browser test
+        run: |
+          python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/relief-http.log 2>&1 &
+          node tests/browser-smoke.mjs | tee /tmp/candidate.json
+      - name: Compare candidate with main on identical synthetic input
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          mv test-results candidate-results
+          cp index.html /tmp/candidate-index.html
+          trap 'cp /tmp/candidate-index.html index.html; mkdir -p test-results; mv candidate-results test-results/candidate' EXIT
+          git show "$BASE_SHA:index.html" > index.html
+          node tests/browser-smoke.mjs | tee /tmp/baseline.json
+          python3 - <<'PY'
+          import json, math, pathlib
+          base = json.loads(pathlib.Path('/tmp/baseline.json').read_text())
+          candidate = json.loads(pathlib.Path('/tmp/candidate.json').read_text())
+          report = {'scope': 'synthetic diagnostic only; not portrait quality validation'}
+          for mode in ('gray', 'ai'):
+              a, b = base[mode], candidate[mode]
+              assert a['gridSize'] == b['gridSize']
+              assert len(a['heightGrid']) == len(b['heightGrid'])
+              delta = [y-x for x,y in zip(a['heightGrid'], b['heightGrid'])]
+              report[mode] = {'baseline': a, 'candidate': b, 'heightDelta': delta,
+                              'heightRMSE': math.sqrt(sum(x*x for x in delta)/len(delta))}
+          report['rotation'] = {'baseline': base['rotation'], 'candidate': candidate['rotation']}
+          pathlib.Path('test-results/comparison.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relief-browser-results
+          path: test-results/
+          retention-days: 7
