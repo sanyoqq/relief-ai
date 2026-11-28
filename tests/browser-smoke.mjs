@@ -41,6 +41,66 @@ try {
  await page.locator('#ai').click();await page.waitForFunction(()=>/AI-барельеф готов|Ошибка AI/.test(document.querySelector('#status').textContent),{},{timeout:600000});
  const status=await page.locator('#status').innerText();assert.match(status,/AI-барельеф готов/);
  const ai=await stl('ai');
+ // Exercise the actual face fusion function with a deterministic synthetic mesh.
+ // This does not test landmark detection or real portrait quality.
+ const faceFusion=await page.evaluate(async()=>{
+   const html=await (await fetch('/index.html')).text();
+   const source=html.match(/function mergeFaceSurface\(a,w,h\)\{[\s\S]*?\n\}/)?.[0];
+   if(!source)throw Error('face fusion function missing');
+   const n=33, mask=new Float32Array(n*n), data=new Float32Array(n*n);
+   for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+     const r=Math.hypot((x-16)/16,(y-16)/16), i=y*n+x;
+     mask[i]=Math.max(0,Math.min(1,(1-r)*5));data[i]=Math.max(0,1-r*r);
+   }
+   const f={x:0,y:0,bw:1,bh:1,w:n,h:n,data,mask};
+   const sampleField=(a,w,h,u,v)=>a[Math.round(v*(h-1))*w+Math.round(u*(w-1))];
+   const maskedBlur=(a,m,w,h,r)=>Float32Array.from(a,(_,i)=>{
+     let sum=0,weight=0;const x=i%w,y=Math.floor(i/w);
+     for(let j=Math.max(0,y-r);j<=Math.min(h-1,y+r);j++)for(let k=Math.max(0,x-r);k<=Math.min(w-1,x+r);k++){const p=j*w+k;sum+=a[p]*m[p];weight+=m[p];}
+     return weight?sum/weight:0;
+   });
+   let strength=100;
+   const $=id=>({value:id==='mode'?'scene':strength,checked:false});
+   const merge=new Function('faceSurface','sourceKind','
+ // Measure browser frame cadence during actual pointer-driven orbit.
+ // SwiftShader CI is a diagnostic baseline, not a hardware FPS guarantee.
+ const canvas=page.locator('#view canvas');
+ await canvas.scrollIntoViewIfNeeded();
+ const rect=await canvas.boundingBox();
+ assert.ok(rect && rect.width>100 && rect.height>100,'3D viewport unavailable');
+ const x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+ await page.mouse.move(x,y);
+ await page.mouse.down();
+ const sample=page.evaluate(()=>new Promise(resolve=>{
+   const times=[];let previous;
+   const start=performance.now();
+   function frame(t){
+     if(previous!==undefined)times.push(t-previous);
+     previous=t;
+     if(performance.now()-start>=2000)resolve(times);
+     else requestAnimationFrame(frame);
+   }
+   requestAnimationFrame(frame);
+ }));
+ try {
+   for(let i=1;i<=30;i++){
+     await page.mouse.move(x+Math.sin(i/30*Math.PI*2)*Math.min(100,rect.width/4),y+Math.sin(i/30*Math.PI)*Math.min(40,rect.height/4));
+     await page.waitForTimeout(35);
+   }
+ }finally{await page.mouse.up();}
+ const frames=await sample;
+ assert.ok(frames.length>0 && frames.every(t=>Number.isFinite(t)&&t>0),'no valid animation frames');
+ const sorted=[...frames].sort((a,b)=>a-b);
+ const rotation={frames:frames.length,fps:1000*frames.length/frames.reduce((a,b)=>a+b,0),p95Ms:sorted[Math.ceil(sorted.length*.95)-1],maxMs:sorted.at(-1)};
+ assert.equal(errors.length,0,errors.join('\n'));console.log(JSON.stringify({gray,ai,status,rotation,faceFusion},null,2));
+}finally{await page.screenshot({path:'test-results/screenshot.png',fullPage:true}).catch(()=>{});await browser.close();}
+,'maskedBlur','sampleField',source+';return mergeFaceSurface')(f,'ai',$,maskedBlur,sampleField);
+   const input=new Float32Array(n*n).fill(.5), output=merge(input,n,n);
+   strength=0;const disabled=merge(input,n,n);
+   return {centerDelta:output[16*n+16]-.5,edgeDelta:output[0]-.5,finite:output.every(Number.isFinite),disabledUnchanged:disabled.every((v,i)=>v===input[i])};
+ });
+ assert.ok(faceFusion.finite && faceFusion.disabledUnchanged && faceFusion.edgeDelta===0,'face fusion invariants failed');
+
  // Measure browser frame cadence during actual pointer-driven orbit.
  // SwiftShader CI is a diagnostic baseline, not a hardware FPS guarantee.
  const canvas=page.locator('#view canvas');
